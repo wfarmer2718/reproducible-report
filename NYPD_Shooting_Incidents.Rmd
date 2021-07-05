@@ -1,0 +1,247 @@
+---
+title: "NYPD Shooting Incidents"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+Violent crime is an ongoing problem in many American cities. Insight into this problem would be of great benefit to law enforcement, policy makers, city planners and residents. The objective of this analysis is to determine what patterns exists in the historical data set of shooting incidents in New York City, USA.  What are some common themes that can be discovered regarding these shootings? In particular, when and where do shootings occur?
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Libraries
+
+These libraries were used to work with the data. If the following code fails to execute, the libraries may need to be installed.
+
+```{r libraries}
+library(tidyverse)
+library(lubridate)
+```
+
+
+## Overview of the Data
+
+Import the data into the workspace, directly from the source. If there are problems accessing the URL, import the file locally if it exists on the local machine using the commented line of code.
+
+```{r import}
+raw <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+#raw <- read_csv(file.choose())
+```
+
+The data set used in this analysis has been retrieved from the [NYC Open Data](https://opendata.cityofnewyork.us/overview/) website, which seems to be reputable based on the transparency the organization has on their standards of handling and collecting data. Metadata such as descriptions of what data are contained for each column can be found [here](https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8).
+
+```{r head}
+head(raw)
+```
+
+Columns representing categorical variables are of type `character`. Nothing interesting is revealed when `summary` is executed on such a data set with columns encoded this way. These columns are converted to type `factor` to illustrate the various categories contained therein.
+
+```{r summary}
+raw %>%
+  mutate_if(is.character, as.factor) %>%
+  summary()
+```
+The data set contains various demographic information about the perpetrator and the victim, such as their sex, race and age. Also included is information about where the crime took place: coordinates, borough, location description, etc. The date and the time the incident occurred is also available, though it would be preferable if the two columns were combined into a DATATIME column. The age columns are categorical, rather than numeric. There appear to be a few outliers in most columns, as evidenced by the *(other)* designation.
+
+
+## Tidying and Transforming the Data
+
+```{r tidy}
+na <- "UNKNOWN"
+
+shooting_data <- raw %>%
+  select(-c(INCIDENT_KEY , X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat)) %>%
+  unite("DATETIME", OCCUR_DATE, OCCUR_TIME, sep = " ") %>%
+  mutate(DATETIME = mdy_hms(DATETIME)) %>%
+  replace_na(list(LOCATION_DESC = na, PERP_AGE_GROUP = na, PERP_SEX = "U", PERP_RACE = na,
+                  VIC_AGE_GROUP = na, VIC_SEX = "U", VIC_RACE = na, JURISDICTION_CODE = -1)) %>%
+  mutate_if(is.character, as.factor)
+```
+
+This code chunk ensures that the resulting transformed data set:
+
+1) Contains columns that contain potentially useful information
+2) Date and time data are combined and converted into a useful data type
+3) That missing values are handled in a meaningful way
+4) That `character` type columns have been converted to a useful format for analysis
+
+### Handling of Missing Values
+
+Inspecting the `summary` of the raw data, it can be observed that several categorical variables have entries for *UNKNOWN*, as well as `na`. It would seem fitting that all `na` entries in these columns be replaced with *UNKNOWN* or *U*, in the case of the `*_SEX` columns. The `na` entries in the  `JURISDICTION_CODE` have been set to `-1`, since data in that column are expected to be integers.
+
+This test should ensure that all `na` entries have been taken care of.
+```{r test}
+for (col in colnames(shooting_data)) {
+  tib <- shooting_data %>% filter(is.na(shooting_data[col]))
+  if (dim(tib)[1] > 0) {
+    print(tib)
+    break
+  }
+}
+```
+
+## Visualizations and Analysis
+
+Some interesting information about the location of shootings and the demographics of the victims and perpetrators can be seen from the summary of the data:
+
+```{r shooting_summary}
+summary(shooting_data)
+```
+
+
+```{r boro}
+shooting_data %>%                                                                                              
+  group_by(BORO) %>%                                                                                              
+  tally() %>%                                                                                                      
+  rename(Borough = BORO) %>%                                                                                     
+  ggplot(aes(x = "", y = n, fill = Borough)) +                                                                 
+  geom_bar(stat="identity", width=1) +                                                                   
+  coord_polar(theta="y", start=0) +                                                                            
+  geom_text(aes(x=1.6, label=Borough),                                                                             
+  position = position_stack(vjust=0.5)) +                                                                         
+  ggtitle("Shootings by Borough") +                                                                              
+  theme_void() +                                                                                                   
+  theme(plot.title = element_text(size = 30, face = "bold"))                                                
+
+```
+
+According to this visual, Brooklyn and The Bronx appear to have a disproportionate share of shooting incidents. This raises questions as to why this is. Do these areas have a favorable environment for crime? Are these areas simply more populated? It would be reasonable to hypothesize that population count and incidents of shootings have a positive relationship. These would be good followup questions for a future analysis.
+
+### Temporal Data vs Shooting Frequency
+
+It is not obvious from looking at the `summary` when shootings take place. Bar graphs should assist with illustrating possible time dependence on the frequency of shootings.
+
+```{r by_hour}
+#Label hour intervals so this graph is easier to understand
+hrLabel <- function() {
+  hrs <- rep("", 24)
+  fst <- 12
+  lst <- 1
+  t1 <- "AM"
+  t2 <- "AM"
+  for (i in 1:24) {
+    if (i %% 2 == 1) {
+      hrs[i] = paste(fst, t1, sep = "")
+    } else {
+      hrs[i] = " "
+    }
+    fst <- (fst + 1) %% 12
+    lst <- (lst + 1) %% 12
+    if (fst == 0) {
+      fst <- 12
+      t1 <- "PM"
+    }
+    if (lst == 0) {
+      lst <- 12
+      t2 <- "PM"
+    }
+  }
+  hrs
+}
+
+shooting_data %>%                                                                                             
+  mutate(Hour = hour(DATETIME)) %>%
+  ggplot(aes(Hour+1)) +                                                                                   
+  geom_bar(aes(y = (..count..)/sum(..count..))) +  
+  scale_y_continuous(labels=scales::percent) + 
+  ggtitle("Hourly Frequency of Shootings") +  
+  xlab("Hour Interval") +
+  ylab("Relative Frequencies") +
+  scale_x_discrete(limits=hrLabel()) +
+  theme(plot.title = element_text(size = 25, face = "bold")) + 
+  theme(axis.text.x = element_text(color = "#993333", 
+                                     size = 11, angle = 35))
+```
+
+Are there certain times of the day when shootings are more frequent? This illustration seems to indicate that is the case. The frequency of shootings seems to vary, on average, during the course of the day, with a peak around 8% of the day's incidents from 11PM-12AM, falling into the morning to a minimum of less than 1% from 9AM - 10AM and rising until 11PM. Are shootings more likely to occur under the cover of darkness at night?
+
+The distribution of the number of shootings takes on a roughly parabolic shape, which might indicate that a polynomial model can be fitted to the relative frequency of shootings per hour, as a percentage of the day's incident totals.
+
+```{r hour_model}
+hrData <- shooting_data %>%                                                                                             
+  mutate(Hour = hour(DATETIME)) %>%
+  group_by(Hour) %>%
+  count() %>%
+  data.frame()
+
+hrData$n = hrData$n / sum(hrData$n)
+
+hrModel <- lm(hrData$n~polym(hrData$Hour,degree=2,raw=TRUE))
+
+data.frame(1:24) %>%
+  ggplot(aes(x = 1:24, y = predict(hrModel) * 100)) +
+  geom_line() + 
+  ggtitle("Predicted Hourly Shootings") +  
+  xlab("Hour Interval") +
+  ylab("Relative Frequencies") +
+  scale_x_discrete(limits=hrLabel()) +
+  theme(plot.title = element_text(size = 25, face = "bold")) + 
+  theme(axis.text.x = element_text(color = "#993333", 
+                                     size = 10, angle = 35)) +
+  scale_y_continuous(limits=c(0,10))
+```
+
+```{r hour_test}
+summary(hrModel)
+```
+
+Based on the R-squared value, ~90% of the variation of shootings during the day is explained by the time of day. The near-zero p-value indicates that it is unlikely this relationship is by chance alone and that there is a correlation between frequency of shootings during the day and the time of day.
+
+**Please note** that this does not show that shooters commit their crimes based on what time it is - they might not necessarily plan when they will commit a murder. There could be a confounding variable at work behind the scenes that correlates with both the time of day and frequency of shootings that could provide a causal explanation for this relationship. 
+
+Do shootings tend to occur when clandestine criminal acts are taking place, such as when a drug deal goes bad? Are criminals too busy at work during the day to carry out a crime?
+
+```{r summer}
+shooting_data %>%                                                                                             
+  mutate(Month = month(DATETIME)) %>%                                                                                
+  ggplot(aes(Month)) +                                                                                              
+  geom_bar(aes(y = (..count..)/sum(..count..))) +  
+  scale_y_continuous(labels=scales::percent) + 
+  ggtitle("Monthly Frequency of Shootings") +   
+  ylab("Relative Frequencies") + 
+  scale_x_discrete(limits = month.abb) +
+  theme(plot.title = element_text(size = 25, face = "bold"))   
+```
+
+It also appears that the frequency of shootings vary by month. There appears to be a steady increase of incidents starting in the dead of winter and peaking in the middle of summer, only to decline into the winter. This leads to the question: Does the summer season have, on average, a disproportionate number of incidents?
+
+```{r summer_months}
+summerCount <- shooting_data %>%                                                                                             
+  filter(month(DATETIME) >= 6 & month(DATETIME) <= 8) %>%
+  nrow()
+```
+
+`summerCount` is the number of rows corresponding to a shooting which has taken place from June through August, inclusive.
+
+A one proportion test would be ideal for determining whether or not summer has an unusual incidence of reported shootings. If the null hypothesis is true, then every month would have about the same rate of shootings, about 8.33% of the year's shootings. Therefore, the three summer months would be expected to account for 25% of the total year's shootings.
+
+```{r summer_test}
+numTrials <- nrow(shooting_data)
+prop.test(x=summerCount, n = numTrials, p=0.25, correct = F)
+```
+The small absolute value of the p-value indicates that there are a disproportionate number of shootings during the summer. In fact, the expected number of shootings that occur during the summer is 34%, with a small margin of error. This suggests that summer sees more cases than would be expected due only to chance.
+
+This leads to yet more questions: Is there a relationship between seasonal temperature and shootings? What demographic patters take place during summer and during the year which would lead to an increase in shootings? Are shootings more likely to be reported during warmer months?
+
+## Conclusion
+
+The key takeaways from this report are:
+
+1) Brooklyn and The Bronx have a disproportionate share of shooting incidents.
+
+2) The frequency of shootings varies, on average, during the course of the day. It appears that most shootings take place late at night or in the early hours of the morning, while the fewest occur from late morning until the early evening.
+
+3) The frequency of shootings peak in the summer. About 34% of all shootings during the course of a year take place during the summer months from June to August. The frequency of shootings tends to increase in the spring until summer and decreases through the fall until winter. 
+
+### Sources of Bias
+
+A common perception about clandestine acts, such as violent crime, is that they take place under the cover of darkness, are usually accompanied by other criminal acts and that these crimes are concentrated in certain places. I believe that this is typically the case. It is likely that I've analyzed the data with these assumptions in mind, when there are actually other trends that are more fundamental or that contradict my beliefs. To mitigate this, I have incorporated into the analysis statistical tests to make assertions and have attempted to be careful about what the results imply. I've also made an attempt to be open minded and consider possible confounding variables at work.
+
+It is also possible there is bias in the data itself. Recall bias might have occurred when collecting the data, especially when the perpetrator hasn't been taken into custody. Law Enforcement and witnesses might be more inclined to make mistakes when giving details about the perpetrator of the shooting. That is why I did not explore demographic data in detail. 
+
+The date the incidents were reported to have taken place might differ significantly from when the shooting actually took place, as reports are made after the fact and usually involve estimation. Such errors have the potential to invalidate the findings regarding shootings and time of the day.
+
+### Session Info
+```{r sess}
+sessionInfo()
+```
